@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdio.h>
 #include <sys/time.h>
 
@@ -62,6 +63,25 @@ wave create_wave(int type, double amplitude, double frequency)
     };
 }
 
+audio_format sample_wave(wave w, double phase) 
+{
+    switch (w.type) {
+        case WAVE_TYPE_SINE: {
+            return sin(phase) * w.amplitude;
+        }
+        case WAVE_TYPE_SQUARE: {
+            return copysign(1.0, sin(phase) * w.amplitude);
+        }
+        case WAVE_TYPE_NOISE: {
+            double s = rand() % INT32_MAX;
+            s = s / (INT32_MAX * 0.5);
+            s -= 0.5;
+            return s;
+        }
+        default: assert(0 && "Unreachable");
+    }
+}
+
 wave_generator create_wave_generator(wave w, size_t channels, size_t samplerate)
 { 
     wave_generator gen = {0};
@@ -75,6 +95,7 @@ wave_generator create_wave_generator(wave w, size_t channels, size_t samplerate)
         gen.buflen = 0;
         return gen;
     }
+
     gen.buflen = gen.samplerate * gen.channels;
     gen.buf = malloc(sizeof(audio_format) * gen.buflen);
     return gen;
@@ -87,47 +108,14 @@ int generate_wave(wave_generator *gen)
     double phase_increment = tau * (gen->w.frequency / (double)gen->samplerate);
     size_t buf_offset = 0;
 
-    if (gen->w.type == WAVE_TYPE_SINE) {
-        for (size_t frame = 0; frame < gen->samplerate; ++frame) { 
-            double s = sin(gen->phase) * gen->w.amplitude;
-            audio_format val = (audio_format) s;
-
-            for (size_t ch = 0; ch < gen->channels; ++ch) {
-                gen->buf[buf_offset++] = val;
-            }
-
-            gen->phase += phase_increment;
-            if (gen->phase >= tau) gen->phase -= tau;
-            else if (gen->phase < 0.0) gen->phase += tau;
+    for (size_t frame = 0; frame < gen->samplerate; ++frame) { 
+        for (size_t ch = 0; ch < gen->channels; ++ch) {
+            gen->buf[buf_offset++] = sample_wave(gen->w, gen->phase);
         }
-    } else if (gen->w.type == WAVE_TYPE_SQUARE) {
-        for (size_t frame = 0; frame < gen->samplerate; ++frame) { 
-            double s = copysign(1.0, sin(gen->phase) * gen->w.amplitude);
-            audio_format val = (audio_format) s;
 
-            for (size_t ch = 0; ch < gen->channels; ++ch) {
-                gen->buf[buf_offset++] = val;
-            }
-
-            gen->phase += phase_increment;
-            if (gen->phase >= tau) gen->phase -= tau;
-            else if (gen->phase < 0.0) gen->phase += tau;
-        }
-    } else if (gen->w.type == WAVE_TYPE_NOISE) {
-        for (size_t frame = 0; frame < gen->samplerate; ++frame) { 
-            double s = rand() % INT32_MAX;
-            s = s / (INT32_MAX * 0.5);
-            s -= 0.5;
-            audio_format val = (audio_format) s;
-
-            for (size_t ch = 0; ch < gen->channels; ++ch) {
-                gen->buf[buf_offset++] = val;
-            }
-
-            gen->phase += phase_increment;
-            if (gen->phase >= tau) gen->phase -= tau;
-            else if (gen->phase < 0.0) gen->phase += tau;
-        }
+        gen->phase += phase_increment;
+        if (gen->phase >= tau) gen->phase -= tau;
+        else if (gen->phase < 0.0) gen->phase += tau;
     }
     return 1;
 }
@@ -137,27 +125,31 @@ struct additive_synth {
     wave w2;
 };
 
-
-
-/* 
- * 48000 => 480000 step/sec sec/step = 1/48000
- *
-*/
-
 #define CHUNK_SIZE 2048
+
+static double keyboard_notes[] = {
+    [' '] = 0,
+    ['a'] = 65.4,  // C3
+    ['s'] = 73.4,  // D3
+    ['d'] = 82.4,  // E3
+    ['f'] = 87.4,  // F3
+    ['g'] = 98.0,  // G3
+    ['h'] = 110.0,  // A3
+    ['j'] = 123.5,  // B3
+    ['k'] = 130.8,  // C4
+    ['l'] = 146.8,  // D4
+};
 
 int main() 
 {
-    wave sine = create_wave(WAVE_TYPE_SINE, 1.0, 440);
+    wave sine = create_wave(WAVE_TYPE_NOISE, 1.0, 440);
     wave_generator generator = create_wave_generator(sine, 2, 48000);
-
     setbuf(stdout, 0);
-    struct timeval start, end;
-    long seconds, useconds;
-    int elapsed_ms;
-    
+// this has to move to another thread. In the main one we will only have input handling...
     size_t written_total = 0;
     while (1) {
+        //char c = getchar();
+        //generator.w = create_wave(WAVE_TYPE_SQUARE, 1.0, keyboard_notes[c]);
         generate_wave(&generator);
         size_t written = 0;
         while (written < generator.buflen) {
@@ -175,7 +167,6 @@ int main()
             }
             written += n;
         }
-        //fflush(stdout);
     }
 
     fclose(stdout);
