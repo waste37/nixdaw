@@ -35,7 +35,6 @@ ma_device *get_and_start_device(
     ma_format format, ma_uint32 channels, ma_uint32 sample_rate, 
     ma_device_data_proc callback, void *user_data) 
 {
-    ma_result result;
     ma_device_config device_config;
     static ma_device device;
     device_config = ma_device_config_init(ma_device_type_playback);
@@ -68,29 +67,55 @@ void decoder_audio_callback(ma_device* dev, void* out, const void* in, ma_uint32
     }
 }
 
-void play_from_file(char *filename, int loop) 
+static ma_float buf[CHUNK_SIZE * DEVICE_CHANNELS];
+
+void play_from_file(char *filename, int loop, int file_output) 
 {
-    ma_result result;
     ma_decoder decoder;
-    result = ma_decoder_init_file(filename, 0, &decoder);
+    ma_decoder_config decoder_config = ma_decoder_config_init(DEVICE_FORMAT, DEVICE_CHANNELS, DEVICE_SAMPLE_RATE);
+    ma_result result = ma_decoder_init_file(filename, &decoder_config, &decoder);
+    ma_device *device = 0;
     if (result != MA_SUCCESS) {
         fprintf(stderr, "Could not load file: %s\n", filename);
         exit(EXIT_FAILURE);
     }
 
     if (loop) ma_data_source_set_looping(&decoder, MA_TRUE);
-    ma_device *device = get_and_start_device(
-        decoder.outputFormat, decoder.outputChannels, decoder.outputSampleRate, 
-        decoder_audio_callback, &decoder
-    );
 
-    if (!device) {
-        ma_decoder_uninit(&decoder);
-        exit(EXIT_FAILURE);
+    if (!file_output) {
+        device = get_and_start_device(
+            decoder.outputFormat, decoder.outputChannels, decoder.outputSampleRate, 
+            decoder_audio_callback, &decoder
+        );
+        if (!device) {
+            ma_decoder_uninit(&decoder);
+            exit(EXIT_FAILURE);
+        }
     }
 
-    while (!finished) msleep(100); 
-    ma_device_uninit(device);
+    while (!finished) {
+        if (file_output) {
+            ma_uint64 n_read = 0;
+
+            if (ma_data_source_read_pcm_frames((ma_data_source*)&decoder, buf, CHUNK_SIZE, &n_read) != MA_SUCCESS) {
+                exit(EXIT_SUCCESS);
+            }
+
+            size_t n_written = 0;
+
+            while (n_written < n_read) {
+                size_t n = fwrite(buf, sizeof(ma_float) * DEVICE_CHANNELS, n_read, stdout);
+                if (n == 0 || feof(stdout)) {
+                    exit(EXIT_FAILURE);
+                }
+
+                n_written += n;
+            }
+
+        } else { msleep(100); }
+    }
+
+    if (device) ma_device_uninit(device);
     ma_decoder_uninit(&decoder);
 }
 
@@ -146,7 +171,7 @@ void play_from_stdin()
             ma_pcm_rb_acquire_write(&ring, &frames_available, (void**)&ptr);
 
             if (frames_available == 0) {
-                msleep(1); // 1 ms, give callback time to consume
+                msleep(1);
                 continue;
             }
 
@@ -184,14 +209,21 @@ int main(int argc, char *argv[])
         usage(argv[0]);
     }
 
+    int loop = 0;
+    char *filename = 0;
+    int file_output = !isatty(STDOUT_FILENO);
+
     if (argc == 1) {
+        if (file_output) {
+            fprintf(stderr, "error: using %s as an passthrough filter\n", argv[0]);
+            usage(argv[0]);
+        }
+
         puts("playing from stdin");
         play_from_stdin();
         return EXIT_SUCCESS;
     }
 
-    int loop = 0;
-    char *filename = 0;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-loop")) {
             if (argc != 3) {
@@ -204,7 +236,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (filename) play_from_file(filename, loop);
+    if (filename) play_from_file(filename, loop, file_output);
     else assert(0 && "unreachable");
 
     return EXIT_SUCCESS;
